@@ -1,326 +1,326 @@
 ﻿zapret v.18
 
-Для чего это надо
+What is it for?
 -----------------
 
-Обойти блокировки веб сайтов http.
+To bypass the web site blocking http.
 
-Как это работает
+How it works
 ----------------
 
-У провайдеров в DPI бывают бреши. Они случаются от того, что правила DPI пишут для
-обычных пользовательских программ, опуская все возможные случаи, допустимые по стандартам.
-Это делается для простоты и скорости. Нет смысла ловить хакеров, которых 0.01%,
-ведь все равно эти блокировки обходятся довольно просто даже обычными пользователями.
+ISPs in DPI have gaps. They happen from the fact that the DPI rules are written for
+ordinary user programs, omitting all possible cases that are acceptable by standards.
+This is done for simplicity and speed. There is no sense in catching hackers, which are 0.01%
+because all the same these locks are quite easy even for ordinary users.
 
-Некоторые DPI не могут распознать http запрос, если он разделен на TCP сегменты.
-Например, запрос вида "GET / HTTP/1.1\r\nHost: kinozal.tv......"
-мы посылаем 2 частями : сначала идет "GET ", затем "/ HTTP/1.1\r\nHost: kinozal.tv.....".
-Другие DPI спотыкаются, когда заголовок "Host:" пишется в другом регистре : например, "host:".
-Кое-где работает добавление дополнительного пробела после метода : "GET /" => "GET  /"
-или добавление точки в конце имени хоста : "Host: kinozal.tv."
+Some DPIs can not recognize the http request if it is divided into TCP segments.
+For example, a query like "GET / HTTP / 1.1 \ r \ nHost: kinozal.tv ......"
+we send in 2 parts: first goes "GET", then "/ HTTP / 1.1 \ r \ nHost: kinozal.tv .....".
+Other DPI stumbles when the "Host:" header is written in a different register: for example, "host:".
+In some cases, an additional white space is added after the method: "GET /" => "GET /"
+or adding a dot at the end of the host name: "Host: kinozal.tv."
 
-Как это реализовать на практике в системе linux
+How to implement this in practice on a linux system
 -----------------------------------------------
 
-Как заставить систему разбивать запрос на части ? Можно прогнать всю TCP сессию
-через transparent proxy, а можно подменить поле tcp window size на первом входящем TCP пакете с SYN,ACK.
-Тогда клиент подумает, что сервер установил для него маленький window size и первый сегмент с данными
-отошлет не более указанной длины. В последующих пакетах мы не будем менять ничего.
-Дальнейшее поведение системы по выбору размера отсылаемых пакетов зависит от реализованного
-в ней алгоритма. Опыт показывает, что linux первый пакет всегда отсылает не более указанной
-в window size длины, остальные пакеты до некоторых пор шлет не более max(36,указанный_размер).
-После некоторого количества пакетов срабатывает механизм window scaling и начинает
-учитываться фактор скалинга, размер пакетов становится не более max(36,указанный_рамер << scale_factor).
-Не слишком изящное поведение, но поскольку на размеры входящик пакетов мы не влияем,
-а объем принимаемых по http данных обычно гораздо выше объема отсылаемых, то визуально
-появятся лишь небольшие задержки.
-Windows ведет себя в аналогичном случае гораздо более предсказуемо. Первый сегмент
-уходит указанной длины, дальше window size меняется в зависимости от значения,
-присылаемого в новых tcp пакетах. То есть скорость почти сразу же восстанавливается
-до возможного максимума.
+How do I get the system to split a request into parts? You can parse the entire TCP session
+through transparent proxy, and you can replace the tcp window size field with the first incoming TCP packet with SYN, ACK.
+Then the client will think that the server has set a small window size for it and the first data segment
+will send no more than the specified length. In subsequent packages we will not change anything.
+The further behavior of the system in choosing the size of the packets sent depends on the implemented
+in it an algorithm. Experience shows that linux first packet always sends no more than specified
+in the window size of the length, the remaining packets until some time sends no more than max (36, specified_size).
+After a certain number of packages, the window scaling mechanism is triggered and starts
+the scaling factor is taken into account, the size of the packets becomes no more than max (36, specified_ scale <factor_factor).
+Not very elegant behavior, but since we do not influence the size of the packet inbound,
+and the amount of data received via http is usually much higher than the amount sent, then visually
+there will be only small delays.
+Windows behaves in a similar case is much more predictable. The first segment
+leaves the specified length, then window size changes depending on the value,
+which is sent in new tcp packages. That is, the speed is almost immediately restored
+up to a possible maximum.
 
-Перехватить пакет с SYN,ACK не представляет никакой сложности средствами iptables.
-Однако, возможности редактирования пакетов в iptables сильно ограничены.
-Просто так поменять window size стандартными модулями нельзя.
-Для этого мы воспользуемся средством NFQUEUE. Это средство позволяет
-передавать пакеты на обработку процессам, работающим в user mode.
-Процесс, приняв пакет, может его изменить, что нам и нужно.
+To intercept a packet with SYN, ACK does not present any complexity by means of iptables.
+However, the ability to edit packets in iptables is severely limited.
+Just so you can not change window size with standard modules.
+For this we use the NFQUEUE tool. This tool allows
+Send packets for processing to processes running in user mode.
+The process by accepting the package can change it, which is what we need.
 
-iptables -t raw -I PREROUTING -p tcp --sport 80 --tcp-flags SYN,ACK SYN,ACK -j NFQUEUE --queue-num 200 --queue-bypass
+iptables -t raw -I PREROUTING -p tcp --sport 80 --tcp-flags SYN, ACK SYN, ACK -j NFQUEUE --queue-num 200 --queue-bypass
 
-Будет отдавать нужные нам пакеты процессу, слушающему на очереди с номером 200.
-Он подменит window size. PREROUTING поймает как пакеты, адресованные самому хосту,
-так и маршрутизируемые пакеты. То есть решение одинаково работает как на клиенте,
-так и на роутере. На роутере на базе PC или на базе OpenWRT.
-В принципе этого достаточно.
-Однако, при таком воздействии на TCP будет небольшая задержка.
-Чтобы не трогать хосты, которые не блокируются провайдером, можно сделать такой ход.
-Создать список заблоченых доменов или скачать его с rublacklist.
-Заресолвить все домены в ipv4 адреса. Загнать их в ipset с именем "zapret".
-Добавить в правило :
+Will give the necessary packages to the process, listening on the queue with the number 200.
+It will override window size. PREROUTING will catch as packets addressed to the host itself,
+and routed packets. That is, the solution works the same way both on the client,
+and on the router. On a router based on PC or on the basis of OpenWRT.
+In principle, this is enough.
+However, with such an impact on TCP there will be a slight delay.
+To avoid touching hosts that are not blocked by the provider, you can make this move.
+Create a list of blocked domains or download it from rublacklist.
+Resolve all domains in ipv4 addresses. Drive them into ipset with the name "zapret".
+Add to rule:
 
-iptables -t raw -I PREROUTING -p tcp --sport 80 --tcp-flags SYN,ACK SYN,ACK -m set --match-set zapret src -j NFQUEUE --queue-num 200 --queue-bypass
+iptables -t raw -I PREROUTING -p tcp --sport 80 --tcp-flags SYN, ACK SYN, ACK -m set --match-set zapret src -j NFQUEUE --queue-num 200 --queue-bypass
 
-Таким образом воздействие будет производиться только на ip адреса, относящиеся к заблокированным сайтам.
-Список можно обновлять через cron раз в несколько дней.
-Если обновлять через rublacklist, то это займет довольно долго. Более часа. Но ресурсов
-этот процесс не отнимает, так что никаких проблем это не вызовет, особенно, если система
-работает постоянно.
+Thus, the impact will be only on ip addresses related to blocked sites.
+The list can be updated through cron every few days.
+If you update via rublacklist, it will take quite a while. More than an hour. But resources
+This process does not take away, so it will not cause any problems, especially if the system
+works constantly.
 
-Если DPI не обходится через разделение запроса на сегменты, то иногда срабатывает изменение
-"Host:" на "host:". В этом случае нам может не понадобится замена window size, поэтому цепочка
-PREROUTING нам не нужна. Вместо нее вешаемся на исходящие пакеты в цепочке POSTROUTING :
+If the DPI does not bypass the segmentation of the query into segments, then sometimes a change occurs
+"Host:" to "host:". In this case, we may not need to change the window size, so the chain
+PREROUTING we do not need. Instead of it we hang on outgoing packets in the chain POSTROUTING:
 
 iptables -t mangle -I POSTROUTING -p tcp --dport 80 -m set --match-set zapret dst -j NFQUEUE --queue-num 200 --queue-bypass
 
-В этом случае так же возможны дополнительные моменты. DPI может ловить только первый http запрос, игнорируя
-последующие запросы в keep-alive сессии. Тогда можем уменьшить нагрузку на проц, отказавшись от процессинга ненужных пакетов.
+In this case, as additional points are possible. DPI can only catch the first http request, ignoring
+subsequent requests in a keep-alive session. Then we can reduce the load by percents, refusing to process unnecessary packets.
 
-iptables -t mangle -I POSTROUTING -p tcp --dport 80 -m connbytes --connbytes-dir=original --connbytes-mode=packets --connbytes 1:5 -m set --match-set zapret dst -j NFQUEUE --queue-num 200 --queue-bypass
+iptables -t mangle -I POSTROUTING -p tcp -dport 80 -m connbytes -connbytes-dir = original -connbytes-mode = packets -connbytes 1: 5 -m set --match-set zapret dst -j NFQUEUE --queue-num 200 --queue-bypass
 
-Случается так, что провайдер мониторит всю HTTP сессию с keep-alive запросами. В этом случае
-недостаточно ограничивать TCP window при установлении соединения. Необходимо посылать отдельными
-TCP сегментами каждый новый запрос. Эта задача решается через полное проксирование трафика через
-transparent proxy (TPROXY или DNAT). TPROXY не работает с соединениями, исходящими с локальной системы,
-так что это решение применимо только на роутере. DNAT работает и с локальными соединениеми,
-но имеется опасность входа в бесконечную рекурсию, поэтому демон запускается под отдельным пользователем,
-и для этого пользователя отключается DNAT через "-m owner". Полное проксирование требует больше ресурсов
-процессора, чем манипуляция с исходящими пакетами без реконструкции TCP соединения.
+It happens that the provider monitors the entire HTTP session with keep-alive requests. In this case
+it is not enough to restrict the TCP window when establishing a connection. It is necessary to send individual
+TCP segments each new request. This task is solved through full proxy traffic through
+transparent proxy (TPROXY or DNAT). TPROXY does not work with connections originating from the local system,
+so this solution is only applicable on the router. DNAT works with local connections,
+but there is a danger of entering infinite recursion, so the daemon starts under a separate user,
+and for this user DNAT is disabled via "-m owner". Full proxying requires more resources
+processor than manipulation with outgoing packets without the reconstruction of the TCP connection.
 
 iptables -t nat -I PREROUTING -p tcp --dport 80 -j DNAT --to 127.0.0.1:1188
-iptables -t nat -I OUTPUT -p tcp --dport 80 -m owner ! --uid-owner tpws -j DNAT --to 127.0.0.1:1188
+iptables -t nat -I OUTPUT -p tcp --dport 80 -m owner! --uid-owner tpws -j DNAT --to 127.0.0.1:1188
 
 nfqws
 -----
 
-Эта программа - модификатор пакетов и обработчик очереди NFQUEUE.
-Она берет следующие параметры :
- --daemon		; демонизировать прогу
- --qnum=200		; номер очереди
- --wsize=4		; менять tcp window size на указанный размер
- --hostcase		; менять регистр заголовка "Host:" по умолчанию на "host:".
- --hostnospace		; убрать пробел после "Host:" и переместить его в конец значения "User-Agent:" для сохранения длины пакета
- --hostspell=HoST	; точное написание заголовка Host (можно "HOST" или "HoSt"). автоматом включает --hostcase
-Параметры манипуляции могут сочетаться в любых комбинациях.
+This program is a packet modifier and a NFQUEUE queue handler.
+It takes the following parameters:
+ --daemon; demonize the prog
+ --qnum = 200; queue number
+ --wsize = 4; change tcp window size to the specified size
+ --hostcase; Change the "Host:" header register to "host:" by default.
+ --hostnospace; Remove the space after "Host:" and move it to the end of the value of "User-Agent:" to save the length of the package
+ --hostspell = HoST; exact writing of the Host header (can be "HOST" or "HoSt"). automatically includes --hostcase
+The manipulation parameters can be combined in any combination.
 
 tpws
 -----
 
-tpws - это transparent proxy.
- --bind-addr		; на каком адресе слушать. может быть ipv4 или ipv6 адрес. если не указано, то слушает на всех адресах ipv4 и ipv6
- --port=<port>		; на каком порту слушать
- --daemon               ; демонизировать прогу
- --user=<username>	; менять uid процесса
- --split-http-req=method|host	; способ разделения http запросов на сегменты : около метода (GET,POST) или около заголовка Host
- --split-pos=<offset>	; делить все посылы на сегменты в указанной позиции. Если отсыл длинее 8Kb (размер буфера приема), то будет разделен каждый блок по 8Kb.
- --hostcase             ; менять регистр заголовка "Host:". по умолчанию на "host:".
- --hostspell=HoST	; точное написание заголовка Host (можно "HOST" или "HoSt"). автоматом включает --hostcase
- --hostdot		; добавление точки после имени хоста : "Host: kinozal.tv."
- --hosttab		; добавление табуляции после имени хоста : "Host: kinozal.tv\t"
- --hostnospace		; убрать пробел после "Host:"
- --methodspace		; добавить пробел после метода : "GET /" => "GET  /"
- --methodeol		; добавить перевод строки перед методом  : "GET /" => "\r\nGET  /"
- --unixeol		; конвертировать 0D0A в 0A и использовать везде 0A
-Параметры манипуляции могут сочетаться в любых комбинациях.
-Есть исключения : split-pos заменяет split-http-req. hostdot и hosttab взаимоисключающи.
+tpws is a transparent proxy.
+ --bind-addr; on which address to listen. can be ipv4 or ipv6 address. if not specified, it listens on all ipv4 and ipv6 addresses
+ --port = <port>; on which port to listen
+ --daemon; demonize the prog
+ --user = <username>; change the uid of the process
+ --split-http-req = method | host; A method of separating http requests into segments: about a method (GET, POST) or near the Host header
+ --split-pos = <offset>; Divide all sends into segments in the specified position. If the send is longer than 8Kb (receive buffer size), each block will be divided into 8Kb.
+ --hostcase; change the "Host:" header register. by default to "host:".
+ --hostspell = HoST; exact writing of the Host header (can be "HOST" or "HoSt"). automatically includes --hostcase
+ --hostdot; adding a dot after the host name: "Host: kinozal.tv."
+ --hosttab; adding tab after the host name: "Host: kinozal.tv \ t"
+ --hostnospace; Remove the space after "Host:"
+ --methodspace; add a space after the method: "GET /" => "GET /"
+ - methodeol; add a line feed before the method: "GET /" => "\ r \ nGET /"
+ --unixeol; convert 0D0A to 0A and use everywhere 0A
+The manipulation parameters can be combined in any combination.
+There are exceptions: split-pos replaces split-http-req. hostdot and hosttab are mutually exclusive.
  
-Провайдеры
+Providers
 ----------
 
-mns.ru : нужна замена window size на 3. mns.ru убирает заблокированные домены из выдачи своих DNS серверов. меняем на сторонние. аплинк westcall банит по IP адреса из списка РКН, где присутствует https
+mns.ru: you need to replace window size with 3. mns.ru removes blocked domains from issuing your DNS servers. we change to third-party. uplink westcall ban on the IP address from the list of ILV where there is https
 
-at-home.ru : при дефолтном подключении все блокировалось по IP. после заказа внешнего IP (static NAT) банятся по IP https адреса
- Для обхода DPI работает замена windows size на 3, но была замечена нестабильность и подвисания. Лучше всего работает сплит запроса около метода в течение всей http сессии.
- В https подменяется сертификат. Если у вас все блокируется по IP, то нет никакого способа, кроме как проксирование порта 80 по аналогии с 443.
+at-home.ru: with the default connection, everything was blocked by IP. after ordering an external IP (static NAT) are hacked by IP https addresses
+ To work around the DPI, the windows size is replaced by 3, but instability and hanging have been observed. The best way is to split the request around the method during the entire http session.
+ In https the certificate is substituted. If you are all blocked by IP, then there is no way, except proxy port 80 similar to 443.
 
-beeline (corbina) : нужна замена регистра "Host:" на протяжении всей http сессии. С некоторых пор "host" не работает, но работают другие регистры букв.
+beeline (corbina): you need to replace the register "Host:" throughout the entire http session. Since some time, "host" does not work, but other registers of letters work.
 
-dom.ru : нужно проксирование HTTP сессий через tpws с заменой регистра "Host:" и разделение TCP сегментов на хедере "Host:".
-  Ахтунг ! Домру блокирует все поддомены заблоченого домена. IP адреса всевозможных поддоменов узнать невозможно из реестра
-  блокировок, поэтому если вдруг на каком-то сайте вылезает блокировочный баннер, то идите в консоль firefox, вкладка network.
-  Загружайте сайт и смотрите куда идет редирект. Потом вносите домен в zapret-hosts-user.txt. Например, на kinozal.tv имеются
-  2 запрашиваемых поддомена : s.kinozal.tv и st.kinozal.tv с разными IP адресами.
-  Домру перехватывает DNS запросы и всовывает свой лже-ответ. Это обходится через дроп лже-ответа посредством iptables по наличию IP адреса заглушки или через dnscrypt.
+dom.ru: proxy HTTP sessions via tpws with the replacement of the register "Host:" and the separation of TCP segments on the host: "Host:".
+  Ahtung! Domra blocks all subdomains of the blocked domain. IP addresses of all possible subdomains can not be found from the registry
+  locks, so if suddenly on some site comes out a blocking banner, then go to the console firefox, the network tab.
+  Download the site and see where the redirect goes. Then enter the domain in zapret-hosts-user.txt. For example, there are kinozal.tv
+  2 requested subdomains: s.kinozal.tv and st.kinozal.tv with different IP addresses.
+  Domra intercepts DNS requests and sticks in his false answer. This is bypassed through the false-response drop by means of iptables by the presence of the IP address of the stub or via dnscrypt.
 
-sknt.ru : проверена работа с tpws с параметром "--split-http-req=method". возможно, будет работать nfqueue, пока возможности
-  проверить нет
+sknt.ru: checked the work with tpws with the parameter "--split-http-req = method". Perhaps nfqueue will work as long as the possibilities
+  check no
 
-Ростелеком/tkt : помогает разделение http запроса на сегменты, настройки mns.ru подходят
-  ТКТ был куплен ростелекомом, используется фильтрация ростелекома.
-  Поскольку DPI не отбрасывает входящую сессию, а только всовывает свой пакет, который приходит раньше ответа от настоящего сервера,
-  блокировки так же обходятся без применения "тяжелой артиллерии" следующим правилом :
-  iptables -t raw -I PREROUTING -p tcp --sport 80 -m string --hex-string "|0D0A|Location: http://95.167.13.50" --algo bm -j DROP --from 40 --to 200
+Rostelecom / tkt: helps to split the http request into segments, the settings of mns.ru are suitable
+  TKT was bought by the Rostelecom, the filtration of Rostelecom is used.
+  Since the DPI does not discard the incoming session, but only sticks in its packet, which comes before the response from the real server,
+  blockages also do without the use of "heavy artillery" the following rule:
+  iptables -t raw -I PREROUTING -p tcp --sport 80 -m string --hex-string "| 0D0A | Location: http://95.167.13.50 " --algo bm -j DROP --from 40 --to 200
 
-tiera : Требуется сплит http запросов в течение всей сессии.
+tiera: Requires a split of http requests for the entire session.
 
-Другие провайдеры
+Other providers
 -----------------
 
-Первым делом необходимо выяснить не подменят ли ваш провайдер DNS.
-Посмотрите во что ресолвятся заблокированные хосты у вашего провайдера и через какой-нибудь web net tools, которых можно нагуглить множество. Сравните.
-Если ответы разные, то попробуйте заресолвить те же хосты с DNS сервера 8.8.8.8 через вашего провайдера.
-Если ответ от 8.8.8.8 нормальный - поменяйте DNS. Если ответ ненормальный, значит провайдер перехватывает запросы на сторонние DNS.
-Используйте dnscrypt.
+The first step is to find out whether your DNS provider will replace it.
+Look into what the blocked hosts from your ISP and through some web net tools can resolve, which can be nested a lot. Compare.
+If the answers are different, then try to resolve the same hosts from the DNS server 8.8.8.8 through your ISP.
+If the answer from 8.8.8.8 is normal, change the DNS. If the answer is abnormal, then the provider intercepts requests for third-party DNS.
+Use dnscrypt.
 
-Далее необходимо выяснить какой метод обхода DPI работает на вашем провайдере.
-В этом вам поможет скрипт https://github.com/ValdikSS/blockcheck.
-Выберите какой демон вы будете использовать : nfqws или tpws.
-Подготовьте вручную правила iptables для вашего случая, выполните их.
-Запустите демон с нужными параметрами вручную.
-Проверьте работает ли.
-Когда вы найдете рабочий вариант, отредактируйте init скрипт для вашей системы.
-Раскомментируйте ISP=custom. Добавьте ваш код в места "# PLACEHOLDER" по аналогии с секциями для других провайдеров для найденной рабочей комбинации.
-Для openwrt поместите в /etc/firewall.user свой код по аналогии с готовыми скриптами.
+Next, you need to find out which DPI workaround is working on your ISP.
+The script https://github.com/ValdikSS/blockcheck will help you with this .
+Choose which daemon you will use: nfqws or tpws.
+Prepare the iptables rules manually for your case, execute them.
+Run the daemon with the required parameters manually.
+Check whether it works.
+When you find a working variant, edit the init script for your system.
+Uncomment ISP = custom. Add your code to the places "# PLACEHOLDER" by analogy with the sections for other providers for the found working combination.
+For openwrt, put your code in /etc/firewall.user by analogy with the finished scripts.
 
-Способы получения списка заблокированных IP
+Ways to get a list of blocked IPs
 -------------------------------------------
 
-1) Внесите заблокирванные домены в ipset/zapret-hosts-user.txt и запустите ipset/get_user.sh
-На выходе получите ipset/zapret-ip-user.txt с IP адресами.
+1) Enter the blocked domains in ipset / zapret-hosts-user.txt and run ipset / get_user.sh
+On the output you will receive ipset / zapret-ip-user.txt with IP addresses.
 
-2) ipset/get_reestr.sh получает список доменов от rublacklist и дальше их ресолвит в ip адреса
-в файл ipset/zapret-ip.txt. В этом списке есть готовые IP адреса, но судя во всему они там в точности в том виде,
-что вносит в реестр РосКомПозор. Адреса могут меняться, позор не успевает их обновлять, а провайдеры редко
-банят по IP : вместо этого они банят http запросы с "нехорошим" заголовком "Host:" вне зависимости
-от IP адреса. Поэтому скрипт ресолвит все сам, хотя это и занимает много времени.
-Дополнительное требование - объем памяти в /tmp для сохранения туда скачанного файла, размер которого
-несколько Мб и продолжает расти. На роутерах openwrt /tmp представляет собой tmpfs , то есть ramdisk.
-В случае роутера с 32 мб памяти ее не хватит, и будут проблемы. В этом случае используйте
-следующий скрипт.
+2) ipset / get_reestr.sh gets a list of domains from rublacklist and then resoles them to ip addresses
+into the ipset / zapret-ip.txt file. In this list there are ready IP addresses, but judging by everything they are there exactly in the form,
+which makes the registry RosKomPozor. Addresses can change, shame does not have time to update them, and providers rarely
+banyat by IP: instead they hack http requests with "bad" header "Host:" regardless
+from the IP address. Therefore, the script solves everything itself, although it takes a lot of time.
+An additional requirement is the amount of memory in / tmp to store the downloaded file, the size of which
+a few MB and continues to grow. On routers, openwrt / tmp is tmpfs, that is ramdisk.
+In the case of a router with 32 MB of memory, it will not be enough, and there will be problems. In this case, use
+the following script.
 
-3) ipset/get_anizapret.sh. быстро и без нагрузки на роутер получает лист с antizapret.prostovpn.org.
+3) ipset / get_anizapret.sh. Fast and no load on the router receives a sheet with antizapret.prostovpn.org.
 
-4) ipset/get_combined.sh. для провайдеров, которые блокируют по IP https, а остальное по DPI. IP https заносится в ipset ipban, остальные в ipset zapret.
-Поскольку скачивается большой список РКН, требования к месту в /tmp аналогичны 2)
+4) ipset / get_combined.sh. for providers that block by IP https, and the rest by DPI. IP https is entered in ipset ipban, the rest in ipset zapret.
+Since a large list of ILVs is downloaded, the requirements for the location in / tmp are similar to 2)
 
-Все варианты рассмотренных скриптов автоматически создают и заполняют ipset.
-Варианты 2-4 дополнительно вызывают вариант 1.
+All variants of the scripts considered automatically create and fill ipset.
+Options 2-4 additionally cause option 1.
 
-На роутерах не рекомендуется вызывать эти скрипты чаще раза за 2 суток, поскольку сохранение идет
-либо во внутреннюю флэш память роутера, либо в случае extroot - на флэшку.
-В обоих случаях слишком частая запись может убить флэшку, но если это произойдет с внутренней
-флэш памятью, то вы просто убьете роутер.
+On routers it is not recommended to call these scripts more often than once in 2 days,
+either to the internal flash memory of the router, or in the case of extroot - to the flash drive.
+In both cases, too frequent recording can kill the flash drive, but if this happens to the internal
+flash memory, then you just kill the router.
 
-Принудительное обновление ipset выполняет скрипт ipset/create_ipset.sh
+Forced update ipset executes the ipset / create_ipset.sh script
 
-Можно внести список доменов в ipset/zapret-hosts-user-ipban.txt. Их ip адреса будут помещены
-в отдельный ipset "ipban". Он может использоваться для принудительного завертывания всех
-соединений на прозрачный proxy "redsocks" или на VPN.
+You can enter a list of domains in ipset / zapret-hosts-user-ipban.txt. Their ip addresses will be placed
+in a separate ipset "ipban". It can be used to force all
+connections to transparent proxy "redsocks" or to a VPN.
 
 
-Пример установки на debian 7
+Installation example on debian 7
 ----------------------------
-Debian 7 изначально содержит ядро 3.2. Оно не умеет делать DNAT на localhost.
-Конечно, можно не привязывать tpws к 127.0.0.1 и заменить в правилах iptables "DNAT 127.0.0.1" на "REDIRECT",
-но лучше установить более свежее ядро. Оно есть в стабильном репозитории :
+Debian 7 initially contains the kernel 3.2. It does not know how to do DNAT on localhost.
+Of course, you can not bind tpws to 127.0.0.1 and replace iptables with "DNAT 127.0.0.1" with "REDIRECT",
+but it is better to install a more recent kernel. It is in a stable repository:
  apt-get update
  apt-get install linux-image-3.16
-Установить пакеты :
+Install packages:
  apt-get update
  apt-get install libnetfilter-queue-dev ipset curl
-Скопировать директорию "zapret" в /opt.
-Собрать nfqws :
- cd /opt/zapret/nfq
+Copy the "zapret" directory to / opt.
+Collect nfqws:
+ cd / opt / zapret / nfq
  make
-Собрать tpws :
- cd /opt/zapret/tpws
+Collect tpws:
+ cd / opt / zapret / tpws
  make
-Скопировать /opt/zapret/init.d/debian7/zapret в /etc/init.d.
-В /etc/init.d/zapret выбрать пераметр "ISP". В зависимости от него будут применены нужные правила.
-Там же выбрать параметр SLAVE_ETH, соответствующий названию внутреннего сетевого интерфейса.
-Включить автостарт : chkconfig zapret on
-(опционально) Вручную первый раз получить новый список ip адресов : /opt/zapret/ipset/get_antizapret.sh
-Зашедулить задание обновления листа :
+Copy /opt/zapret/init.d/debian7/zapret to /etc/init.d.
+In /etc/init.d/zapret, select the "ISP" parameter. Depending on it, the necessary rules will be applied.
+In the same place, select the SLAVE_ETH parameter corresponding to the name of the internal network interface.
+Enable autostart: chkconfig zapret on
+(optional) Manually the first time to get a new list of ip addresses: /opt/zapret/ipset/get_antizapret.sh
+To pause the update job for a worksheet:
  crontab -e
- Создать строчку  "0 12 * * */2 /opt/zapret/ipset/get_antizapret.sh". Это значит в 12:00 каждые 2 дня обновлять список.
-Запустить службу : service zapret start
-Попробовать зайти куда-нибудь : http://ej.ru, http://kinozal.tv, http://grani.ru.
-Если не работает, то остановить службу zapret, добавить правило в iptables вручную,
-запустить nfqws в терминале под рутом с нужными параметрами.
-Пытаться подключаться к заблоченым сайтам, смотреть вывод программы.
-Если нет никакой реакции, значит скорее всего указан неверный номер очереди или ip назначения нет в ipset.
-Если реакция есть, но блокировка не обходится, значит параметры обхода подобраные неверно, или это средство
-не работает в вашем случае на вашем провайдере.
-Никто и не говорил, что это будет работать везде.
-Попробуйте снять дамп в wireshark или "tcpdump -vvv -X host <ip>", посмотрите действительно ли первый
-сегмент TCP уходит коротким и меняется ли регистр "Host:".
+ Create a line "0 12 * * * / 2 /opt/zapret/ipset/get_antizapret.sh". This means at 12:00 every 2 days to update the list.
+Start the service: service zapret start
+Try to go somewhere: http://ej.ru , http://kinozal.tv , http://grani.ru .
+If it does not work, then stop the zapret service, add the rule to iptables manually,
+run nfqws in the terminal under the root with the required parameters.
+Try to connect to blocked sites, watch the output of the program.
+If there is no response, then most likely the wrong queue number is specified or there is no ip destination in ipset.
+If there is a reaction, but the blockage is not bypassed, then the bypass parameters chosen are not correct, or this means
+Does not work in your case on your ISP.
+Nobody said that it would work everywhere.
+Try to remove the dump in wireshark or "tcpdump -vvv -X host <ip>", see if the first
+The TCP segment goes short and the "Host:" register changes.
 
-ubuntu 12,14
+ubuntu 12.14
 ------------
 
-Имеется готовый конфиг для upstart : zapret.conf. Его нужно скопировать в /etc/init и настроить по аналогии с debian.
-Запуск службы : "start zapret"
-Останов службы : "stop zapret"
-Просмотр сообщений : cat /var/log/upstart/zapret.log
-Ubuntu 12 так же, как и debian 7, оснащено ядром 3.2. См замечание в разделе "debian 7".
+There is a ready config for upstart: zapret.conf. It needs to be copied to / etc / init and configured in the same way as debian.
+Starting the service: "start zapret"
+Stop service: "stop zapret"
+Show Posts: cat /var/log/upstart/zapret.log
+Ubuntu 12, as well as debian 7, is equipped with the kernel 3.2. See the comment in the "debian 7" section.
 
-ubuntu 16,debian 8
+ubuntu 16, debian 8
 ------------------
 
-Процесс аналогичен debian 7, однако требуется зарегистрировать init скрипты в systemd после их копирования в /etc/init.d.
-По умолчанию lsb-core может быть не установлен.
+The process is similar to debian 7, however, it is required to register init scripts in systemd after copying them to /etc/init.d.
+By default, lsb-core may not be installed.
 apt-get update
-apt-get --no-install-recommends install lsb-core
+apt-get -no-install-recommends install lsb-core
 
-install : /usr/lib/lsb/install_initd zapret
-remove : /usr/lib/lsb/remove_initd zapret
-start : sytemctl start zapret
-stop : systemctl stop zapret
-status, output messages : systemctl status zapret
+install: / usr / lib / lsb / install_initd zapret
+remove: / usr / lib / lsb / remove_initd zapret
+start: sytemctl start zapret
+stop: systemctl stop zapret
+status, output messages: systemctl status zapret
 
-Другие linux системы
+Other linux systems
 --------------------
 
-Существует несколько основных систем запуска служб : sysvinit, upstart, systemd.
-Настройка зависит от системы, используемой в вашем дистрибутиве.
-Типичная стратегия - найти скрипт или конфигурацию запуска других служб и написать свой по аналогии,
-при необходимости почитывая документацию по системе запуска.
-Нужные команды можно взять из предложенных скриптов.
+There are several basic systems for starting services: sysvinit, upstart, systemd.
+The setting depends on the system used in your distribution.
+A typical strategy is to find a script or configuration for starting other services and write your own by analogy,
+if necessary, reading the documentation on the launch system.
+The necessary commands can be taken from the proposed scripts.
 
 
-Фаерволлы
+Firewalls
 ---------
 
-Если вы используете какую-то систему управления фаерволом, то она может вступать в конфликт
-с имеющимся скриптом запуска. В этом случае правила для iptables должны быть прикручены
-к вашему фаерволу отдельно от скрипта запуска tpws или nfqws.
-Именно так решается вопрос в случае с openwrt, поскольку там своя система управления фаерволом.
-При повторном применении правил она могла бы поломать настройки iptables, сделанные скриптом из init.d.
+If you use some kind of firewall management system, then it can enter into conflict
+with an existing startup script. In this case, the rules for iptables must be screwed
+to your firewall separately from the startup script of tpws or nfqws.
+This is how the question is solved in the case of openwrt, since there is a firewall management system.
+When reapplying the rules, it could break the iptables settings made by the script from init.d.
 
-Что делать с openwrt/LEDE
+What to do with openwrt / LEDE
 -------------------------
 
-Установить дополнительные пакеты :
+Install additional packages:
 opkg update
 opkg install iptables-mod-extra iptables-mod-nfqueue iptables-mod-filter iptables-mod-ipopt ipset curl bind-tools
-(для новых LEDE) opkg install kmod-ipt-raw
+(for new LEDE) opkg install kmod-ipt-raw
 
-Самая главная трудность - скомпилировать программы на C. Это можно сделать на linux x64 при помощи SDK, который
-можно скачать с официального сайта openwrt или LEDE. Но процесс кросс компиляции - это всегда сложности.
-Недостаточно запустить make как на традиционной linux системе.
-Поэтому в binaries имеются готовые статические бинарики для всех самых распространенных архитектур.
-Статическая сборка означает, что бинарик не зависит от типа libc (glibc, uclibc или musl) и наличия установленных so - его можно использовать сразу.
-Лишь бы подходил тип CPU. У ARM и MIPS есть несколько версий. Найдите работающий на вашей системе вариант.
-Скорее всего таковой найдется. Если нет - вам придется собирать самостоятельно.
+The most important difficulty is compiling programs in C. This can be done on linux x64 using the SDK, which
+can be downloaded from the official website openwrt or LEDE. But the process of cross compiling is always a challenge.
+It's not enough to run make on a traditional linux system.
+Therefore, binaries have ready-made static binaries for all the most common architectures.
+Static assembly means that the binaric does not depend on the type libc (glibc, uclibc or musl) and the presence of installed so - it can be used immediately.
+If only the type of CPU would fit. ARM and MIPS have several versions. Find the option that works on your system.
+Most likely there is one. If not, you will have to collect it yourself.
 
-Скопировать директорию "zapret" в /opt на роутер.
-Скопировать работающий бинарик nfqws в /opt/zapret/nfq, tpws в /opt/zapret/tpws.
-Скопировать /opt/zapret/init.d/zapret в /etc/init.d.
-В /etc/init.d/zapret выбрать пераметр "ISP". В зависимости от него будут применены нужные правила.
+Copy the directory "zapret" to / opt to the router.
+Copy the running binaries nfqws to / opt / zapret / nfq, tpws to / opt / zapret / tpws.
+Copy /opt/zapret/init.d/zapret to /etc/init.d.
+In /etc/init.d/zapret, select the "ISP" parameter. Depending on it, the necessary rules will be applied.
 /etc/init.d/zapret enable
 /etc/init.d/zapret start
-В зависимости от вашего провайдера внести нужные записи в /etc/firewall.user.
+Depending on your provider, make the necessary entries in /etc/firewall.user.
 /etc/init.d/firewall restart
-Посмотреть через iptables -L или через luci вкладку "firewall" появились ли нужные правила.
-Зашедулить задание обновления листа :
+View through iptables-L or through the luci tab "firewall" whether the necessary rules have appeared.
+To pause the update job for a worksheet:
  crontab -e
- Создать строчку  "0 12 * * */2 /opt/zapret/ipset/get_antizapret.sh". Это значит в 12:00 каждые 2 дня обновлять список.
+ Create a line "0 12 * * * / 2 /opt/zapret/ipset/get_antizapret.sh". This means at 12:00 every 2 days to update the list.
 
-Обход блокировки https
+Bypass https locking
 ----------------------
 
-Как правило трюки с DPI не помогают для обхода блокировки https.
-Приходится перенаправлять трафик через сторонний хост.
-Предлагается использовать прозрачный редирект через socks5 посредством iptables+redsocks, либо iptables+iproute+openvpn.
-Настройка варианта с redsocks на openwrt описана в https.txt.
+As a rule, tricks with DPI do not help to bypass https.
+It is necessary to redirect traffic through an external host.
+It is suggested to use a transparent redirect through socks5 via iptables + redsocks, or iptables + iproute + openvpn.
+The configuration of the version with redsocks on openwrt is described in https.txt.
